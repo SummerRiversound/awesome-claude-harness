@@ -9,7 +9,7 @@
     {
       "name": "harness-skills",
       "source": "./plugins/harness-skills",
-      "description": "ready-review (review gate before a PR goes ready), session-retro (one-turn retrospective) and show-first (references before building a new look).",
+      "description": "ready-review (review gate before a PR goes ready), session-retro (one-turn retrospective), show-first (references before building a new look) and design-check (design checklist before coding).",
       "category": "productivity",
       "tags": [
         "code-review",

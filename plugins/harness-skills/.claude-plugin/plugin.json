@@ -1,8 +1,8 @@
 {
   "name": "harness-skills",
   "displayName": "Harness Skills",
-  "version": "1.0.0",
-  "description": "ready-review, session-retro and show-first: a review gate before a PR goes ready, a one-turn session retrospective, and references before building a new look.",
+  "version": "1.1.0",
+  "description": "ready-review, session-retro, show-first and design-check: a review gate before a PR goes ready, a one-turn session retrospective, references before building a new look, and a design checklist before coding.",
   "author": {
     "name": "SummerRiversound",
     "url": "https://github.com/SummerRiversound"
@@ -10,5 +10,10 @@
   "homepage": "https://github.com/SummerRiversound/claude-harness#readme",
   "repository": "https://github.com/SummerRiversound/claude-harness",
   "license": "MIT",
-  "keywords": ["code-review", "retrospective", "design", "agent-skill"]
+  "keywords": [
+    "code-review",
+    "retrospective",
+    "design",
+    "agent-skill"
+  ]
 }
