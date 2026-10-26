@@ -4,6 +4,16 @@
 
 ![license](https://img.shields.io/badge/license-MIT-555) ![works with](https://img.shields.io/badge/works%20with-Claude%20Code-2f8f5b)
 
+## Easiest install: ask Claude
+
+Paste this into Claude Code:
+
+```
+Install https://github.com/SummerRiversound/awesome-claude-harness by following its INSTALL.md
+```
+
+It asks which pieces you want, installs them, and sets up the starter rules. Agents: the steps are in [`INSTALL.md`](./INSTALL.md).
+
 ## What's inside
 
 | Plugin | What it does |
@@ -15,7 +25,7 @@
 
 All skills are model-invoked: Claude reaches for them when the situation fits, so you rarely type them.
 
-## Install
+## Install by hand
 
 ```
 /plugin marketplace add https://github.com/SummerRiversound/awesome-claude-harness.git
