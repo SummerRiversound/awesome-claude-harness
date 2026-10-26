@@ -1,4 +1,4 @@
-# claude-harness
+# awesome-claude-harness
 
 **One place to install a working Claude Code setup.** These are the skills and rules I use every day, with everything private or company-specific taken out: a review gate before a PR goes ready, a retrospective that improves the setup over time, references before building a new look, goal trees for big jobs, and reports a person can read on the first pass.
 
@@ -18,11 +18,11 @@ All skills are model-invoked: Claude reaches for them when the situation fits, s
 ## Install
 
 ```
-/plugin marketplace add https://github.com/SummerRiversound/claude-harness.git
-/plugin install harness-skills@claude-harness
-/plugin install goal-tree@claude-harness
-/plugin install human-readable-reports@claude-harness
-/plugin install review-inbox@claude-harness
+/plugin marketplace add https://github.com/SummerRiversound/awesome-claude-harness.git
+/plugin install harness-skills@awesome-claude-harness
+/plugin install goal-tree@awesome-claude-harness
+/plugin install human-readable-reports@awesome-claude-harness
+/plugin install review-inbox@awesome-claude-harness
 ```
 
 Install only the ones you want. `/plugin update` keeps them current.
