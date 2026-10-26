@@ -1,0 +1,65 @@
+{
+  "name": "claude-harness",
+  "description": "A working Claude Code setup: review gate, retrospectives, reference-first design, goal trees and plain-language reports.",
+  "owner": {
+    "name": "SummerRiversound",
+    "url": "https://github.com/SummerRiversound"
+  },
+  "plugins": [
+    {
+      "name": "harness-skills",
+      "source": "./plugins/harness-skills",
+      "description": "ready-review (review gate before a PR goes ready), session-retro (one-turn retrospective) and show-first (references before building a new look).",
+      "category": "productivity",
+      "tags": [
+        "code-review",
+        "retrospective",
+        "design",
+        "agent-skill"
+      ]
+    },
+    {
+      "name": "goal-tree",
+      "source": {
+        "source": "github",
+        "repo": "SummerRiversound/goal-tree"
+      },
+      "description": "Before a big job, build the goal tree with the user: top goal, sub-goals, and ordered milestones you can check.",
+      "category": "productivity",
+      "tags": [
+        "planning",
+        "goals",
+        "milestones",
+        "agent-skill"
+      ]
+    },
+    {
+      "name": "human-readable-reports",
+      "source": {
+        "source": "github",
+        "repo": "SummerRiversound/human-readable-reports"
+      },
+      "description": "Make AI-written analysis and report docs easy for humans to read and share (fights AI verbosity and slop).",
+      "category": "productivity",
+      "tags": [
+        "writing",
+        "reports",
+        "agent-skill"
+      ]
+    },
+    {
+      "name": "review-inbox",
+      "source": {
+        "source": "github",
+        "repo": "SummerRiversound/review-inbox"
+      },
+      "description": "Your GitHub work in a drawer: PRs waiting for your review, your open PRs with their reviews, and your issues.",
+      "category": "productivity",
+      "tags": [
+        "github",
+        "code-review",
+        "mod"
+      ]
+    }
+  ]
+}
