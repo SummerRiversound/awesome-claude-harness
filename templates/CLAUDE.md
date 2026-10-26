@@ -1,6 +1,6 @@
 # Global instructions
 
-<!-- Starter ~/.claude/CLAUDE.md from https://github.com/SummerRiversound/claude-harness, generated from the author's own rules with private and company lines removed. Replace <이름> with your name and <your-github-account> with your GitHub account, then cut or rewrite anything that does not fit how you work. A skill or hook named here that you have not installed: skip that part. -->
+<!-- Starter ~/.claude/CLAUDE.md from https://github.com/SummerRiversound/awesome-claude-harness, generated from the author's own rules with private and company lines removed. Replace <이름> with your name and <your-github-account> with your GitHub account, then cut or rewrite anything that does not fit how you work. A skill or hook named here that you have not installed: skip that part. -->
 
 ## Session start
 
