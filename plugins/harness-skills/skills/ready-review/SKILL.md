@@ -41,4 +41,4 @@ It reports one table, finding → outcome (commit sha, the evidence, or the open
 
 - Push. When the body carries `Door:` / `Blast radius:` lines, re-check them against what was actually committed.
 - Open items: present them to the user with the recommendation. The PR stays draft until they decide.
-- Nothing open: `gh pr ready`. Never request a re-review. Then call the Skill tool with `session-retro`.
+- Nothing open: `gh pr ready`. Then call the Skill tool with `session-retro`.
