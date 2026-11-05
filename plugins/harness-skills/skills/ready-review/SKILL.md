@@ -10,6 +10,7 @@ A draft PR is flipped to ready only through this gate. The human reviewer sees a
 ## 1. Preconditions (main session)
 
 - Working tree clean, every change committed on the PR branch.
+- Fresh base: `git fetch`. When HEAD does not contain `origin/$base` (or, for a stacked PR, the default branch the base should already hold), rebase first; decisions merged in between are part of the review. Review the lower PR of a stack before the upper one, then rebase the upper.
 - Fixed point: `base=$(gh pr view --json baseRefName -q .baseRefName)`, then `git merge-base origin/$base HEAD`. The diff under review is `git diff <merge-base>...HEAD`.
 - Spec source, first found wins: the linked issue (`gh pr view --json closingIssuesReferences`), a spec file the repo keeps for this feature, the PR body's Summary.
 - Standards sources: every agent instruction file the repo has (`AGENTS.md`, `CLAUDE.md`, `.github/copilot-instructions.md`, `CONTRIBUTING.md`, `docs/design-system/` when present), plus the repo's decision record when it has one (`docs/DECISIONS.md` and the ADRs under `docs/ADR/` whose topic the diff touches). A change that contradicts an accepted ADR is a finding.
@@ -39,6 +40,6 @@ It reports one table, finding → outcome (commit sha, the evidence, or the open
 
 ## 4. Close (main session)
 
-- Push. When the body carries `Door:` / `Blast radius:` lines, re-check them against what was actually committed.
+- Push. Re-check the whole PR body against what was actually committed and the current base: `Door:` / `Blast radius:`, evidence and test counts, stacking notes.
 - Open items: present them to the user with the recommendation. The PR stays draft until they decide.
 - Nothing open: `gh pr ready`. Then call the Skill tool with `session-retro`.
