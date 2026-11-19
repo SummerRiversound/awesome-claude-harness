@@ -1,6 +1,6 @@
 ---
 name: ready-review
-description: Review gate before a draft PR is flipped to ready. Use when the user asks to mark a PR ready, asks for the pre-ready review, or the PR flow reaches that step. Three read-only reviews run in parallel (defects, standards, spec), then one fix agent commits every finding it cannot refute with evidence; only open questions come back to the user.
+description: Review gate before a draft PR is flipped to ready. Use when the user asks to mark a PR ready, asks for the pre-ready review, or the PR flow reaches that step. Three read-only reviews run in parallel (defects, standards, spec), then one fix agent commits every finding it cannot refute with evidence, and the fix commits are reviewed again before the PR goes ready; only open questions come back to the user.
 ---
 
 # Ready review
@@ -38,9 +38,26 @@ Every finding gets exactly one outcome:
 
 It reports one table, finding → outcome (commit sha, the evidence, or the open question), and nothing else.
 
-## 4. Close (main session)
+## 4. Review the fixes (main session)
 
-- Each report opens with the HEAD sha it reviewed. If HEAD moved since, beyond the fix commits, review the new commits before going on.
+Skip this step when step 3 committed nothing. Otherwise the fix commits are code no reviewer has seen.
+
+- **One more pass**: a fresh Defects agent over `git diff <sha before the fixes>..HEAD`, with the whole diff as context. Its prompt carries the user's decisions and nothing from step 2: no report, no finding list, no fix table. A reviewer that has seen the first round confirms it.
+- **It reports blocking findings only**: wrong behaviour with a failure scenario, a breach of a documented standard, or a spec gap that a fix introduced or left. The reviewer sets the class; step 3 may refute a finding with evidence but never reclassifies one to get to zero.
+- **A blocking finding** goes back through step 3 and its fix is reviewed the same way, three passes at most. When the third still has one, stop: the PR stays draft and the user gets what keeps coming back.
+- **Not converging**: when a pass finds as many as the one before, the same place again, or a defect inside a fix, stop fixing and name the reason first.
+  - The same cause shows up in new places: fix the cause once instead of each finding.
+  - Each fix breaks something else: the change is too tangled. Add the missing tests first, or split the PR.
+  - Reviewers contradict each other, or the spec reads two ways: it is a decision, not a fix.
+  - Findings are scattered over unrelated areas: the PR is too large. Split it.
+
+  A root-cause fix inside the PR's scope you make and report. A redesign, a split or a spec decision is an open item for the user, with what recurs and a recommendation.
+- **After ready too**: commits pushed in answer to a human review get the same pass before the reviewer is asked to look again. A fix made under review is as unreviewed as one made before it.
+- **Rebase before, tidy after**: bring in the base (step 1) before the pass you expect to be clean; a rebase after it voids it. Once the pass is clean, history may be tidied: fold each fixup into the commit it fixes and keep the commits that mean something on their own. `git diff <clean sha> HEAD` must print nothing, and then no new pass is needed.
+
+## 5. Close (main session)
+
+- Each report opens with the HEAD sha it reviewed. If the tree changed after the last clean pass (anything but a history tidy whose diff is empty), review the new commits before going on.
 - Push. Re-check the whole PR body against what was actually committed and the current base: `Door:` / `Blast radius:`, evidence and test counts, stacking notes.
 - Open items: present them to the user with the recommendation. The PR stays draft until they decide.
 - Review-bot threads (Codex, Copilot): each one has a reply or is resolved before the PR goes ready; a human reviewer who has to repeat a bot finding has been handed unfinished work.
