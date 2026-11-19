@@ -40,7 +40,7 @@ It reports one table, finding → outcome (commit sha, the evidence, or the open
 
 ## 4. Review the fixes (main session)
 
-Skip this step when step 3 committed nothing. Otherwise the fix commits are code no reviewer has seen, and they are the commonest thing a human reviewer sends back.
+Skip this step when step 3 committed nothing. Otherwise the fix commits are code no reviewer has seen.
 
 - **One more pass**: a fresh Defects agent over `git diff <sha before the fixes>..HEAD`, with the whole diff as context. Its prompt carries the user's decisions and nothing from step 2: no report, no finding list, no fix table. A reviewer that has seen the first round confirms it.
 - **It reports blocking findings only**: wrong behaviour with a failure scenario, a breach of a documented standard, or a spec gap that a fix introduced or left. The reviewer sets the class; step 3 may refute a finding with evidence but never reclassifies one to get to zero.
