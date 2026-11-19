@@ -9,7 +9,7 @@ A model-invoked twin of the user-only `retro` skill in [mattpocock/skills](https
 
 ## When it runs
 
-- Right after `gh pr ready` (ready-review step 4).
+- Right after `gh pr ready` (ready-review step 5).
 - Right before a handoff document is written.
 - On request.
 
