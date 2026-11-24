@@ -12,6 +12,12 @@ def guard(cmd, cwd="/tmp", env=None):
     return "deny" in out
 
 
+def make_hook(path, body="#!/bin/sh\n"):
+    with open(path, "w") as f:
+        f.write(body)
+    os.chmod(path, 0o755)
+
+
 class GuardTest(unittest.TestCase):
     def test_denies_heavy_commands_in_any_disguise(self):
         for cmd in ["npx vitest run", "timeout 600 npx vitest run", "uv run python -m pytest tests",
@@ -19,7 +25,12 @@ class GuardTest(unittest.TestCase):
                     "pre-commit run --all-files", "heavy-run --status && uv run pytest tests/",
                     "cd web && npm test", "make -C api test", "docker compose up -d --build",
                     "FOO=1 nice -n 5 npm run build", "echo $(npx tsc --noEmit)", "npm ci",
-                    "ls\npytest -x", "./gradlew build"]:
+                    "ls\npytest -x", "./gradlew build", "pnpm --filter web test", "pnpm -r test",
+                    "npm -w web run build", "yarn workspace web test", "turbo run test", "npx nx run-many -t test",
+                    "go test ./...", "cargo t", "for i in 1; do pytest; done", "if true; then npm test; fi",
+                    "bash -c 'npm test'", "uv run --with x pytest", "pnpm vitest run", "npx vue-tsc --noEmit",
+                    "python -m unittest", "tox", "npm t", "echo `pytest`", "cat <<< hi\nnpm test",
+                    "env -u FOO npm test", "sudo -u me npm test"]:
             with self.subTest(cmd=cmd):
                 self.assertTrue(guard(cmd))
 
@@ -28,7 +39,9 @@ class GuardTest(unittest.TestCase):
                     "cd web && /x/heavy-run -- npm test", "echo 'npx vitest run'", "rg pytest src",
                     "cat > f.sh <<'EOF'\npytest tests\nnpm run build\nEOF", "npx vitest --version",
                     "HEAVY_BYPASS=1 npx vitest run", "pytest --co -q", "npm run dev", "git status",
-                    "docker compose up -d"]:
+                    "docker compose up -d", "mvn -v", "./gradlew --version", "./gradlew tasks", "tsc -v",
+                    "make -n test", "npm run build-docs", "echo a # ; npm test", "turbo dev", "pnpm install",
+                    "npm install typescript", "pytest --help"]:
             with self.subTest(cmd=cmd):
                 self.assertFalse(guard(cmd))
 
@@ -38,15 +51,36 @@ class GuardTest(unittest.TestCase):
             self.assertFalse(guard("git commit -m x", d))
             self.assertFalse(guard("git push", d))
             for name in ("pre-commit", "pre-push"):
-                p = os.path.join(d, ".git", "hooks", name)
-                with open(p, "w") as f:
-                    f.write("#!/bin/sh\n")
-                os.chmod(p, 0o755)
+                make_hook(os.path.join(d, ".git", "hooks", name))
             self.assertTrue(guard("git commit -m x", d))
             self.assertTrue(guard(f"git -C {d} push origin HEAD", "/tmp"))
             self.assertFalse(guard("git commit --no-verify -m x", d))
             self.assertFalse(guard("git commit -nm x", d))
             self.assertFalse(guard("git push --no-verify", d))
+
+    def test_husky_runs_only_the_hooks_it_has(self):
+        with tempfile.TemporaryDirectory() as d:
+            subprocess.run(["git", "init", "-q", d], check=True)
+            os.makedirs(os.path.join(d, ".husky", "_"))
+            for name in ("pre-commit", "pre-push"):  # husky 9 writes a stub for every hook
+                make_hook(os.path.join(d, ".husky", "_", name))
+            make_hook(os.path.join(d, ".husky", "pre-commit"), "npx lint-staged\n")
+            subprocess.run(["git", "-C", d, "config", "core.hooksPath", ".husky/_"], check=True)
+            self.assertTrue(guard("git commit -m x", d))
+            self.assertFalse(guard("git push", d))
+
+    def test_a_guard_error_never_blocks(self):
+        self.assertFalse(guard("git commit -m x", "/tmp", env={"PATH": "/nonexistent"}))
+
+    def test_inner_hook_checks_the_wrapped_command_in_its_directory(self):
+        with tempfile.TemporaryDirectory() as d:
+            hook = os.path.join(d, "hook.py")
+            make_hook(hook, "#!/usr/bin/env python3\nimport json,sys\nd=json.load(sys.stdin)\n"
+                            "if 'rm ' in d['tool_input']['command'] and d['cwd'].endswith('etc'):\n"
+                            "    print('no', file=sys.stderr); sys.exit(2)\n")
+            env = {"HEAVY_INNER_HOOK": hook}
+            self.assertTrue(guard("cd /etc && heavy-run -- rm -rf x", "/", env=env))
+            self.assertFalse(guard("cd /tmp && heavy-run -- rm -rf x", "/", env=env))
 
 
 def size(label, **env):
@@ -58,10 +92,14 @@ class SizeTest(unittest.TestCase):
     def test_narrow_runs_are_small_whole_runs_are_big(self):
         small = ["npx vitest run src/a.test.ts", "uv run pytest tests/test_x.py -q", "pytest tests -k login",
                  "npx vitest run -t 'saves draft'", "pytest tests/test_x.py::test_y", "npx tsc --noEmit",
-                 "npx vitest run src/a.test.tsx > /tmp/out 2>&1; tail -5 /tmp/out"]
+                 "npx vitest run src/a.test.tsx > /tmp/out 2>&1; tail -5 /tmp/out", "npm test -- src/a.test.ts",
+                 "npm run test:unit -- -t foo", "pytest tests/test_a.py -n 1"]
         big = ["npx vitest run", "uv run pytest tests/", "npx vitest run src/pages src/components",
                "npm run build", "npm run typecheck", "git commit -m x", "npx playwright test",
-               "npx tsc --noEmit && npx vitest run"]
+               "npx tsc --noEmit && npx vitest run", "npx playwright test e2e/a.spec.ts",
+               "npx playwright test -c e2e/playwright.config.ts", "npx jest -c jest.config.js",
+               "pytest tests --ignore tests/test_slow.py", "npx vitest run --config vite.config.ts",
+               "pytest tests/test_a.py -n 8"]
         for s in small:
             with self.subTest(s=s):
                 self.assertEqual(size(s), "small")
@@ -81,13 +119,13 @@ class TokenTest(unittest.TestCase):
         p = subprocess.run([RUN, label], capture_output=True, text=True, env=dict(self.env, **env))
         out.append((time.time() - t0, p.stdout.strip(), p.returncode))
 
-    def parallel(self, labels, **env):
+    def parallel(self, labels, gap=0.2, **env):
         out = []
         ts = [threading.Thread(target=self.go, args=(l, out), kwargs=env) for l in labels]
         t0 = time.time()
         for t in ts:
             t.start()
-            time.sleep(0.2)
+            time.sleep(gap)
         for t in ts:
             t.join()
         return time.time() - t0, out
@@ -100,6 +138,16 @@ class TokenTest(unittest.TestCase):
         took, out = self.parallel(["sleep 1.5; echo $HEAVY_WORKERS"] * 2, HEAVY_SIZE="big")
         self.assertGreater(took, 3.0)
         self.assertEqual([o[1] for o in out], ["2", "2"])
+
+    def test_big_runs_go_in_arrival_order(self):
+        took, out = self.parallel([f"sleep 1; echo {i}" for i in range(4)], gap=0.4, HEAVY_SIZE="big", HEAVY_BIG="3")
+        self.assertEqual([o[1] for o in out], ["0", "1", "2", "3"])
+
+    def test_small_runs_leave_a_waiting_big_run_its_tokens(self):
+        # a small run holds 1 of 3; a big run (3) waits; later small runs must not slip in ahead of it
+        took, out = self.parallel(["sleep 2; echo s1", "sleep 0.5; echo big", "sleep 0.5; echo s2"], gap=0.4,
+                                  HEAVY_BIG="3", HEAVY_SIZE="")
+        self.assertEqual([o[1] for o in out], ["s1", "big", "s2"])
 
     def test_low_memory_waits_only_when_others_hold_tokens(self):
         self.go("true", [], HEAVY_MEM_MIN="101")  # alone: admitted at once
@@ -114,6 +162,27 @@ class TokenTest(unittest.TestCase):
         r = subprocess.run([RUN, "true"], env=dict(self.env, HEAVY_WAIT_MAX="1"), capture_output=True)
         t.join()
         self.assertEqual(r.returncode, 75)
+
+    def test_tokens_stay_taken_when_the_wrapper_is_killed(self):
+        p = subprocess.Popen([RUN, "sleep 3"], env=dict(self.env, HEAVY_SIZE="big", HEAVY_BIG="3"))
+        time.sleep(0.8)
+        p.kill()
+        p.wait()
+        r = subprocess.run([RUN, "true"], env=dict(self.env, HEAVY_WAIT_MAX="1"), capture_output=True)
+        self.assertEqual(r.returncode, 75)
+
+    def test_worker_caps_and_exit_codes(self):
+        env = dict(self.env, HEAVY_SIZE="big", HEAVY_BIG="2", MAKEFLAGS="-j1 -s")
+        r = subprocess.run([RUN, "echo $MAKEFLAGS $VITEST_MAX_THREADS $RUST_TEST_THREADS"], env=env,
+                           capture_output=True, text=True)
+        self.assertEqual(r.stdout.strip(), "-j1 -s 2 2")
+        r = subprocess.run([RUN, "kill -TERM $$"], env=self.env, capture_output=True)
+        self.assertEqual(r.returncode, 143)
+        with tempfile.TemporaryDirectory() as d:
+            jest = os.path.join(d, "jest")
+            make_hook(jest, '#!/bin/sh\necho "$@"\n')
+            r = subprocess.run([RUN, "--", jest, "src"], env=env, capture_output=True, text=True)
+            self.assertEqual(r.stdout.strip(), "src --maxWorkers=2")
 
 
 if __name__ == "__main__":

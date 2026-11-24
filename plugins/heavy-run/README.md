@@ -12,10 +12,14 @@ makes those commands share the cores instead.
    use instead: the same command wrapped in `heavy-run`.
 2. `heavy-run` takes tokens from one pool shared by every session (cores minus one). A whole
    suite or build takes 3, a run narrowed to a file or test name takes 1. When the pool is empty
-   the run waits its turn.
+   the run waits; whole suites and builds go in arrival order, and small runs cannot cut in front
+   of one that is waiting.
 3. The run gets as many worker processes as tokens: it sets the caps vitest, pytest-xdist,
-   cargo, make and gradle read, plus `HEAVY_WORKERS` for anything else.
+   cargo, make and gradle read, adds `--maxWorkers` or `--workers` for jest and Playwright, and
+   sets `HEAVY_WORKERS` for anything else.
 4. When the run ends, its whole process group is stopped, so no test workers are left behind.
+   That includes anything started inside it with `&`. If the wrapper itself is killed, the
+   command keeps its tokens until it exits.
 5. If free memory is low and other runs are going, a new run waits for memory too.
 
 Counting shares instead of measuring idle CPU is deliberate. Two sessions that both see six idle
@@ -29,11 +33,12 @@ Kubernetes, the GNU make jobserver and Bazel admit work the same way.
 /plugin install heavy-run@awesome-claude-harness
 ```
 
-Then add this to `env` in `~/.claude/settings.json` so a run can wait and still finish in the
-foreground, and restart Claude Code:
+Then add this to `env` in `~/.claude/settings.json` and restart Claude Code. It raises Claude
+Code's Bash limit to its maximum, two hours, so a run can wait for tokens and still finish. The
+hook asks Claude to run whole suites in the background, which has the same two-hour ceiling.
 
 ```json
-"BASH_MAX_TIMEOUT_MS": "3600000"
+"BASH_MAX_TIMEOUT_MS": "7200000"
 ```
 
 Needs Python 3 and macOS or Linux.
@@ -58,6 +63,9 @@ To skip the check for one call, put `HEAVY_BYPASS=1` in the command.
   counted. The memory gate is the backstop for those.
 - Worker caps work for tools that read them. A tool that ignores them can use more than its share.
 - Dev servers and watch mode never finish, so they are not wrapped and not counted.
+- The hook reads the command line only. `npm run lint` is caught because the script name says so,
+  but a bare `eslint .` is not, and a custom script name such as `npm run ci` is not either.
+- Commands passed through `xargs`, `watch` or `find -exec` are not caught.
 
 ## Tests
 
