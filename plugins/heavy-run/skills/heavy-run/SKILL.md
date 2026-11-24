@@ -44,9 +44,9 @@ stopped too, including a server you started inside it with `&`.
 | `HEAVY_TOKENS` | cores minus 1 | Size of the shared pool |
 | `HEAVY_BIG` | 3 | Tokens and workers for a whole suite or build |
 | `HEAVY_MEM_MIN` | 15 | A new run waits while free memory is under this percent and someone else is running |
-| `HEAVY_WAIT_MAX` | 2700 | Seconds a run waits before giving up with exit code 75 |
+| `HEAVY_WAIT_MAX` | 2700 | Seconds a run waits in total (service lock and tokens) before giving up with exit code 75 |
 | `HEAVY_SERVICE_PATTERN` | unset | Regex for commands that use one shared service stack (fixed container names or ports); they run one at a time |
-| `HEAVY_INNER_HOOK` | unset | Path of another Bash hook that should also check the commands inside `heavy-run` |
+| `HEAVY_INNER_HOOK` | unset | Path of another Bash hook that should also check each command inside `heavy-run`; its deny or ask is passed on, its allow is not |
 | `HEAVY_SIZE` | guessed | `small` or `big` for one run, when the guess is wrong |
 
 Worker caps: vitest (`VITEST_MAX_WORKERS`, and the threads and forks caps for vitest 3 and older),

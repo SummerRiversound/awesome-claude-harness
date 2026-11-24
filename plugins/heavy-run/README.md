@@ -19,7 +19,7 @@ makes those commands share the cores instead.
    sets `HEAVY_WORKERS` for anything else.
 4. When the run ends, its whole process group is stopped, so no test workers are left behind.
    That includes anything started inside it with `&`. If the wrapper itself is killed, the
-   command keeps its tokens until it exits.
+   command keeps its tokens until it exits, and so does anything it left running in the background.
 5. If free memory is low and other runs are going, a new run waits for memory too.
 
 Counting shares instead of measuring idle CPU is deliberate. Two sessions that both see six idle
@@ -55,14 +55,15 @@ heavy-run --reap [--kill]              orphaned test workers older than 30 minut
 ```
 
 Settings and tuning are in [`skills/heavy-run/SKILL.md`](./skills/heavy-run/SKILL.md).
-To skip the check for one call, put `HEAVY_BYPASS=1` in the command.
+To skip the check for one command, put `HEAVY_BYPASS=1` in front of it.
 
 ## Limits
 
 - Programs started outside the wrapper (Docker containers, editors, a video call) are not
   counted. The memory gate is the backstop for those.
 - Worker caps work for tools that read them. A tool that ignores them can use more than its share.
-- Dev servers and watch mode never finish, so they are not wrapped and not counted.
+- Dev servers and watch mode (`--watch`, `test:watch`) never finish, so they are let through, not
+  wrapped and not counted.
 - The hook reads the command line only. `npm run lint` is caught because the script name says so,
   but a bare `eslint .` is not, and a custom script name such as `npm run ci` is not either.
 - Commands passed through `xargs`, `watch` or `find -exec` are not caught.

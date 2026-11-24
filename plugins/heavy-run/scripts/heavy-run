@@ -57,14 +57,16 @@ SVC = f"{DIR}/services.lock"
 HEAVY_PROC = re.compile(r"vitest|tinypool|jest-worker|playwright|pytest|pyright|\btsc\b|rustc|cargo|semgrep|trivy")
 TOOL = re.compile(r"\b(?:vitest|jest|pytest|playwright|mocha|pyright|tsc|mypy|cargo|gradlew?|mvnw?|make|docker|"
                   r"npm|pnpm|yarn|bun|git|pre-commit|vite|eslint|go|turbo|nx|tox|nox|unittest|dotnet|deno)\b")
-RUNNER = re.compile(r"\b(?:vitest|jest|pytest|mocha|(?:npm|pnpm|yarn|bun)(?: run)? (?:test|t)(?::\S+)?)\b")
+RUNNER = re.compile(r"\b(?:vitest|jest|pytest|mocha|go test|(?:npm|pnpm|yarn|bun)(?: run)? (?:test|t)(?::\S+)?)\b")
 # Option values that name a file but do not narrow the run (config files, excluded paths).
 NOT_FILTER = re.compile(r"\s(?:-c|--config|--ignore|--ignore-glob|--deselect|--exclude|-p|--rootdir|--confcutdir|"
                         r"--cov-config|--reporter|--outputFile|--output-file|--setupFiles)(?:[\s=])\S+")
-FILTER = re.compile(r"\s(?:-k|-t|-g|--grep|--testNamePattern|--test-name-pattern)(?:[\s=]|$)|::|"
+FILTER = re.compile(r"\s(?:-k|-t|-g|-run|--grep|--testNamePattern|--test-name-pattern)(?:[\s=]|$)|::|"
                     r"\s[^\s-]\S*\.(?:py|[cm]?[jt]sx?)\b")
 SINGLE = re.compile(r"\b(?:tsc|pyright|mypy)\b")
 WORKERS = re.compile(r"\s(?:-n|--numprocesses|--workers|-j|--jobs|--maxWorkers|--max-workers)[\s=](\d+)\b")
+# Worker flags count only after a tool that takes them: `tail -n 40` or `nice -n 5` is not a worker count.
+TAKES_WORKERS = re.compile(r"\b(?:pytest|playwright|jest|vitest|mocha|make|cargo|tox|nox|gradlew?|mvnw?|turbo|nx)\b")
 
 
 def tok(i):
@@ -76,14 +78,14 @@ def need_of(label):
     s = os.environ.get("HEAVY_SIZE", "").lower()
     if s in ("small", "big"):
         return 1 if s == "small" else BIG
-    explicit = [int(n) for n in WORKERS.findall(label)]
+    segs = [NOT_FILTER.sub(" ", re.sub(r"\d?>>?&?\s*\S+", "", x)) for x in re.split(r"&&|\|\||;|\|", label)]
+    explicit = [int(n) for x in segs for m in [TAKES_WORKERS.search(x)] if m for n in WORKERS.findall(x[m.end():])]
     if explicit:
         return max(1, min(TOKENS, max(explicit)))
-    segs = [NOT_FILTER.sub(" ", re.sub(r"\d?>>?&?\s*\S+", "", x)) for x in re.split(r"&&|\|\||;|\|", label)]
     segs = [x for x in segs if TOOL.search(x)]
 
     def small(seg):
-        if re.search(r"\bplaywright\b", seg):
+        if re.search(r"\bplaywright\b|[:\s]e2e\b", seg):
             return False  # spreads over its own workers whatever the filter
         if RUNNER.search(seg):
             return bool(FILTER.search(seg))
@@ -191,8 +193,11 @@ def join_queue(label, need):
     return fd, path
 
 
+START = time.time()  # one wait limit for the service lock and the tokens together
+
+
 def acquire_lock(path, label, what):
-    start, last = time.time(), 0.0
+    start, last = START, 0.0
     while True:
         fd = try_lock(path)
         if fd is not None:
@@ -213,7 +218,7 @@ def acquire_tokens(need, label):
     mine, qfd, qpath = {}, None, None
     if need > 1:
         qfd, qpath = join_queue(label, need)
-    start, last = time.time(), 0.0
+    start, last = START, 0.0
     try:
         while True:
             q = queue()
@@ -293,8 +298,10 @@ def reap(kill):
     found = 0
     for line in ps.splitlines():
         pid, ppid, uid, et, cmd = line.split(None, 4)
-        if (ppid == "1" and uid == str(os.getuid()) and HEAVY_PROC.search(cmd) and etime_s(et) > 1800
-                and "heavy-run" not in cmd and "watch" not in cmd):
+        words = cmd.split()
+        prog = " ".join(words[:2])  # the program and its script (node .../vitest.mjs), not every argument
+        if (ppid == "1" and uid == str(os.getuid()) and HEAVY_PROC.search(prog) and etime_s(et) > 1800
+                and "heavy-run" not in cmd and not {"watch", "--watch", "--watchAll"} & set(words)):
             found += 1
             print(f"{pid}  {et}  {cmd[:140]}")
             if kill:
@@ -348,10 +355,15 @@ def run(argv):
 
     def on_signal(signum, _frame):
         stop_group()
-        try:
-            child.wait(3)
-        except subprocess.TimeoutExpired:
-            stop_group(signal.SIGKILL)
+        # child.wait() cannot be used here: the interrupted wait() below holds its lock.
+        for _ in range(30):
+            try:
+                if os.waitpid(child.pid, os.WNOHANG)[0]:
+                    break
+            except ChildProcessError:
+                break
+            time.sleep(0.1)
+        stop_group(signal.SIGKILL)
         sys.exit(128 + signum)
 
     for s in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
@@ -377,8 +389,14 @@ def main():
     elif a[0] == "--size":
         print("small" if need_of(" ".join(a[1:])) == 1 else "big")
     else:
-        run(a[1:] if a[0] == "--" else a)
+        argv = a[1:] if a[0] == "--" else a
+        if not argv:
+            sys.exit("[heavy-run] no command given; see heavy-run --help")
+        run(argv)
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except KeyboardInterrupt:  # Ctrl-C while waiting for tokens
+        sys.exit(130)

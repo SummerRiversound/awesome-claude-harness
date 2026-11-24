@@ -6,45 +6,51 @@ looks inside bash -c / sh -c / eval strings, and denies a segment that starts a 
 segment that is itself a heavy-run call is allowed. A guard error never blocks: it is logged to
 ~/.cache/heavy-run/guard-errors.log and the call goes through.
 """
-import json, os, re, shlex, subprocess, sys, traceback
+import json, os, re, shlex, sys, time, traceback
 
 HERE = os.path.dirname(os.path.realpath(__file__))
 UV = (r"uv run(?: (?:--with|--with-requirements|--python|-p|--project|--directory|--package|--extra|--group|"
       r"--env-file)[ =]\S+| --?[\w-]+)*")
-WRAP = rf"(?:npx|bunx|pnpm(?: exec| dlx)?|npm exec|yarn(?: run)?|{UV}|uvx|poetry run|python3? -m|bun x)"
+NPX = r"(?:npx|bunx|bun x|npm exec|pnpm(?: exec| dlx)?|yarn(?: run| dlx)?)(?: (?:-y|--yes|-q|--quiet|(?:-p|--package)[ =]\S+))*"
+WRAP = rf"(?:{NPX}|{UV}|uvx|poetry run|python3? -m|coverage run(?: -m)?|c8|nyc)"
 # Workspace options that may sit between the package manager and the script name.
 PM_OPTS = (r"(?:(?:--filter|-F|-w|--workspace|--prefix|-C|--dir)[ =]\S+ |"
-           r"(?:-r|--recursive|--parallel|--if-present|-ws|--workspaces) )*")
+           r"(?:-r|--recursive|--parallel|--if-present|-ws|--workspaces|-s|--silent|-q|--quiet) )*")
 SCRIPTS = r"(?:test|type-?check|tsc|build|lint|e2e|check|verify|validate)(?::\S+)?(?:\s|$)"
 HEAVY = [re.compile(r"\A" + p) for p in (
     rf"(?:{WRAP} )*(?:vitest|jest)\b",
-    rf"(?:npm|pnpm|bun) {PM_OPTS}(?:run )?(?:t(?:\s|$)|{SCRIPTS})",
-    rf"yarn (?:workspace \S+ |workspaces foreach (?:-\S+ )*)?{PM_OPTS}(?:run )?{SCRIPTS}",
+    rf"(?:npm|pnpm|bun) {PM_OPTS}(?:(?:run|run-script) {PM_OPTS})?(?:t(?:\s|$)|{SCRIPTS})",
+    rf"yarn (?:workspace \S+ |workspaces foreach (?:-\S+ )*)?{PM_OPTS}(?:run {PM_OPTS})?{SCRIPTS}",
     r"(?:npm|pnpm) ci\b",
     rf"(?:{WRAP} )*(?:vue-)?tsc\b",
     rf"(?:{WRAP} )*pytest\b",
     rf"(?:{WRAP} )*(?:pyright|mypy|tox|nox|unittest)\b",
-    r"cargo (?:\+\S+ )?(?:build|b|test|t|check|c|clippy|nextest)\b",
-    r"go (?:test|build|vet)\b",
+    r"cargo (?:\+\S+ )?(?:-\S+ )*(?:build|b|test|t|check|c|clippy|nextest)\b",
+    r"go (?:-C \S+ )?(?:test|build|vet)\b",
     r"(?:dotnet|swift) (?:test|build)\b",
     r"deno test\b",
     rf"(?:{WRAP} )*turbo (?:run )?(?:\S+ )*?(?:test|build|lint|check|type-?check|e2e)\b",
     rf"(?:{WRAP} )*nx (?:(?:test|build|lint|e2e)\b|(?:run-many|affected)\b.*\b(?:test|build|lint|e2e)\b)",
     rf"(?:{WRAP} )*playwright test\b",
-    rf"(?:{WRAP} )*vite build\b",
-    r"(?:gradlew|gradle|mvnw|mvn) (?:\S+ )*?(?:build|test|check|assemble|install|package|verify|compile\S*|"
-    r"integrationTest)\b",
-    r"docker (?:buildx )?build\b|docker compose (?:\S+ )*?(?:build\b|up\b.* --build\b)",
-    r"pre-commit run\b",
-    r"make (?:\S+ )*?(?:test|check|build|lint)\b",
+    rf"(?:{WRAP} )*(?:vite|next|nuxt|nuxi|astro|svelte-kit|remix) build\b",
+    rf"(?:{WRAP} )*webpack\b(?! (?:serve|watch)\b)",
+    rf"(?:{WRAP} )*(?:mocha\b|cypress run\b)",
+    r"(?:gradlew|gradle|mvnw|mvn) (?:\S+ )*?(?:\S*:)?(?:build|test|check|assemble|install|package|verify|"
+    r"compile\S*|integrationTest)\b",
+    r"docker (?:buildx )?build\b|docker compose (?:--?\S+ \S+ )*(?:build\b|up\b.* --build\b)",
+    rf"(?:{WRAP} )*pre-commit run\b",
+    r"make (?:\S+ )*?(?:test|check|build|lint|all)\b",
+    r"make(?: (?:-[Cfj] ?\S+|-\S+|\w+=\S*))*$",  # the default target is usually the build
 )]
 # Asking a tool for its version, help, config or a dry run is not a run.
-LIGHT = {"--version", "--help", "-h", "--dry-run", "--init", "--showConfig", "--collect-only", "--co"}
+LIGHT = {"--version", "--help", "-h", "--dry-run", "--init", "--showConfig", "--collect-only", "--co", "--listTests",
+         "--list", "--fixtures", "--markers", "--watch", "--watchAll"}
 LIGHT_BY_TOOL = {"mvn": {"-v", "-V"}, "mvnw": {"-v", "-V"}, "gradle": {"-v"}, "gradlew": {"-v"}, "tsc": {"-v"},
                  "make": {"-n", "--just-print"}}
 PREFIX = {"timeout", "gtimeout", "time", "env", "nice", "command", "exec", "nohup", "caffeinate", "sudo", "stdbuf",
           "do", "then", "else", "elif", "if", "while", "until", "{", "!"}
-TAKES_VALUE = {"env": {"-u", "-C", "-S"}, "sudo": {"-u", "-g", "-C"}, "nice": {"-n"}}
+TAKES_VALUE = {"env": {"-u", "-C", "-S"}, "sudo": {"-u", "-g", "-C"}, "nice": {"-n"},
+               "timeout": {"-s", "-k", "--signal", "--kill-after"}, "gtimeout": {"-s", "-k", "--signal", "--kill-after"}}
 SHELLS = {"bash", "sh", "zsh", "dash"}
 ASSIGN = re.compile(r"[A-Za-z_][A-Za-z0-9_]*=")
 
@@ -62,7 +68,7 @@ def strip_heredocs(cmd):
     while i < len(lines):
         out.append(lines[i])
         # not a here-string (<<<) and not a shift inside $(( ))
-        tags = re.findall(r"(?<![<\w])<<(?!<)-?\s*['\"]?([A-Za-z_][A-Za-z0-9_]*)['\"]?", lines[i])
+        tags = re.findall(r"(?<![<\w])<<(?!<)-?\s*['\"]?([^\s'\"<>;&|()]+)['\"]?", lines[i])
         i += 1
         for tag in tags:
             while i < len(lines) and lines[i].strip() != tag:
@@ -127,6 +133,7 @@ def strip_prefix(w):
 
 def git_paths(root, name):
     """(repo top, common git dir, path git runs the hook from), or None when not a repo or git fails."""
+    import subprocess
     try:
         out = subprocess.run(["git", "-C", root, "rev-parse", "--path-format=absolute", "--show-toplevel",
                               "--git-common-dir", "--git-path", f"hooks/{name}"],
@@ -173,34 +180,54 @@ def git_heavy(w, cwd):
     return hook_installed(cwd, "pre-commit" if sub == "commit" else "pre-push")
 
 
+def wrapped(seg):
+    """The command text a heavy-run segment runs, as the shell will see it (no requoting)."""
+    rest = re.split(r"\bheavy-run\b", seg, maxsplit=1)[1].strip()
+    rest = re.sub(r"\A--(?:\s+|\Z)", "", rest)
+    if not rest or rest.startswith("--"):
+        return None
+    w = words_of(rest)
+    return w[0] if len(w) == 1 else rest
+
+
+def is_light(w):
+    names = [os.path.basename(a) for a in w]
+    return (any(a in LIGHT or a in LIGHT_BY_TOOL.get(names[0], ()) or a == "watch" or a.endswith(":watch")
+                for a in w[1:])
+            or any(n in ("vitest", "jest") and w[i + 1:i + 2] in (["list"], ["dev"]) for i, n in enumerate(names)))
+
+
 def check(cmd, cwd, depth=0):
     """Returns (heavy segment or None, list of (command wrapped in heavy-run, its cwd))."""
     inner = []
     for seg in segments(strip_heredocs(cmd)):
         w, bypass = strip_prefix(words_of(seg))
-        if bypass or not w:
+        if not w:
             continue
         head = os.path.basename(w[0])
         if head == "cd" and len(w) > 1:
             cwd = os.path.join(cwd, os.path.expanduser(w[1]))
             continue
         if head == "heavy-run":
-            rest = w[2:] if len(w) > 1 and w[1] == "--" else w[1:]
-            if rest and not rest[0].startswith("--"):
-                inner.append((rest[0] if len(rest) == 1 else shlex.join(rest), cwd))
+            body = wrapped(seg)
+            if body:
+                inner.append((body, cwd))
             continue
-        if depth < 3 and ((head in SHELLS and "-c" in w[1:-1]) or head == "eval"):
-            body = w[w.index("-c") + 1] if head in SHELLS else " ".join(w[1:])
+        flag = next((i for i, a in enumerate(w[1:-1], 1) if re.fullmatch(r"-[a-z]*c[a-z]*", a)), None)
+        if depth < 3 and ((head in SHELLS and flag) or head == "eval"):
+            body = w[flag + 1] if head in SHELLS else " ".join(w[1:])
             found, more = check(body, cwd, depth + 1)
             inner += more
-            if found:
+            if found and not bypass:
                 return seg, inner
+            continue
+        if bypass:
             continue
         if head == "git":
             if git_heavy(w, cwd):
                 return seg, inner
             continue
-        if any(a in LIGHT or a in LIGHT_BY_TOOL.get(head, ()) for a in w[1:]):
+        if is_light(w):
             continue
         line = " ".join([head] + w[1:])
         if any(p.search(line) for p in HEAVY):
@@ -221,26 +248,44 @@ def deny(seg):
         "Never wrap dev servers or watch mode, which never finish and would hold tokens; anything the wrapped "
         "command starts in the background is stopped when it ends. "
         f"Do not split the work to dodge the wait. `{run} --status` shows who holds the tokens.")
-    print(json.dumps({"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "deny",
+    decision("deny", reason)
+
+
+def decision(kind, reason):
+    print(json.dumps({"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": kind,
                                              "permissionDecisionReason": reason}}))
 
 
 def run_inner_hook(hook, data, inner):
-    """Other hooks only see the wrapper; let one of them check each wrapped command too."""
+    """Other hooks only see the wrapper; let one of them check each wrapped command too.
+    Only its deny or ask is passed on: an allow for one wrapped command must not approve the whole call."""
+    import subprocess
     argv = [hook] if os.access(hook, os.X_OK) else ["bash", hook]
+    deadline, ask = time.time() + 7, None  # stay inside the 10 s hook timeout in hooks.json
     for cmd, cwd in inner:
+        left = deadline - time.time()
+        if left <= 0:
+            break
         try:
             r = subprocess.run(argv, input=json.dumps(dict(data, cwd=cwd, tool_input={"command": cmd})),
-                               capture_output=True, text=True, timeout=4)
-        except subprocess.TimeoutExpired:
+                               capture_output=True, text=True, timeout=min(4, left))
+        except (subprocess.TimeoutExpired, OSError):
             continue
         if r.returncode == 2:  # the documented blocking exit: stderr is the reason
-            print(json.dumps({"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "deny",
-                                                     "permissionDecisionReason": r.stderr.strip() or "blocked"}}))
-            return
-        if r.stdout.strip():
-            print(r.stdout)
-            return
+            return decision("deny", r.stderr.strip() or "blocked")
+        try:
+            out = json.loads(r.stdout or "null") or {}
+            spec = out.get("hookSpecificOutput") or {}
+            kind = spec.get("permissionDecision") or {"block": "deny"}.get(out.get("decision"))
+            why = spec.get("permissionDecisionReason") or out.get("reason") or "blocked"
+        except (ValueError, AttributeError):
+            continue
+        if kind == "deny":
+            return decision("deny", why)
+        if kind == "ask" and ask is None:
+            ask = why
+    if ask is not None:
+        decision("ask", ask)
 
 
 def main():
