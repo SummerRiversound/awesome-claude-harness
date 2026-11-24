@@ -9,6 +9,7 @@ Check that `claude --version` runs. Then ask the user, in one round (AskUserQues
 | Install name | What it gives |
 |---|---|
 | `harness-skills@awesome-claude-harness` | ready-review, session-retro, show-first, design-check skills |
+| `heavy-run@awesome-claude-harness` | Tests and builds from parallel sessions share the CPU instead of freezing the computer; afterwards add `"BASH_MAX_TIMEOUT_MS": "3600000"` to `env` in `~/.claude/settings.json` |
 | `goal-tree@awesome-claude-harness` | Goal tree and milestones before a big job |
 | `human-readable-reports@awesome-claude-harness` | Reports and PR bodies a person can read on the first pass |
 | `review-inbox@awesome-claude-harness` | A drawer with GitHub PRs and issues; needs GitHub settings afterwards |

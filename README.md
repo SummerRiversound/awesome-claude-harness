@@ -19,6 +19,7 @@ It asks which pieces you want, installs them, and sets up the starter rules. Age
 | Plugin | What it does |
 |---|---|
 | `harness-skills` | **ready-review**: three reviews in parallel (defects, standards, spec) before a draft PR goes ready, then one agent fixes what it cannot refute and the fixes are reviewed again. **session-retro**: a one-turn retrospective that proposes changes to your setup, not your code. **show-first**: gathers references and shows you options before building a screen, icon or other look you judge by eye. **design-check**: a checklist distilled from repeated review findings (dependency direction, docs moving with code, tests that claim only real guarantees), run before coding and before a PR. |
+| [`heavy-run`](./plugins/heavy-run) | Run many sessions at once without freezing the computer: tests, type checks and builds share one pool of CPU tokens, worker counts follow the share, leftover test workers are stopped. |
 | [`goal-tree`](https://github.com/SummerRiversound/goal-tree) | Before a big job, builds the goal tree with you: top goal, sub-goals, ordered milestones you can check. |
 | [`human-readable-reports`](https://github.com/SummerRiversound/human-readable-reports) | Rules that make agent-written reports, PR bodies and docs readable on the first pass. |
 | [`review-inbox`](https://github.com/SummerRiversound/review-inbox) | A drawer with your GitHub work: PRs waiting for your review, your PRs and your issues. |
@@ -30,6 +31,7 @@ All skills are model-invoked: Claude reaches for them when the situation fits, s
 ```
 /plugin marketplace add https://github.com/SummerRiversound/awesome-claude-harness.git
 /plugin install harness-skills@awesome-claude-harness
+/plugin install heavy-run@awesome-claude-harness
 /plugin install goal-tree@awesome-claude-harness
 /plugin install human-readable-reports@awesome-claude-harness
 /plugin install review-inbox@awesome-claude-harness
