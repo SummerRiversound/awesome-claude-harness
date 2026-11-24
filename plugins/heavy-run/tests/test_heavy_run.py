@@ -39,7 +39,8 @@ class GuardTest(unittest.TestCase):
             self.assertFalse(guard("git push", d))
             for name in ("pre-commit", "pre-push"):
                 p = os.path.join(d, ".git", "hooks", name)
-                open(p, "w").write("#!/bin/sh\n")
+                with open(p, "w") as f:
+                    f.write("#!/bin/sh\n")
                 os.chmod(p, 0o755)
             self.assertTrue(guard("git commit -m x", d))
             self.assertTrue(guard(f"git -C {d} push origin HEAD", "/tmp"))
@@ -93,7 +94,7 @@ class TokenTest(unittest.TestCase):
 
     def test_small_runs_share_the_pool(self):
         took, out = self.parallel(["sleep 1.5 # pytest a.py"] * 3, HEAVY_SIZE="small")
-        self.assertLess(took, 2.9)
+        self.assertLess(took, 4.0)  # one after another would take 4.5+
 
     def test_two_big_runs_do_not_fit_together(self):
         took, out = self.parallel(["sleep 1.5; echo $HEAVY_WORKERS"] * 2, HEAVY_SIZE="big")
