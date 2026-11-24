@@ -353,7 +353,11 @@ def run(argv):
         except (ProcessLookupError, PermissionError):
             pass
 
+    done = {}
+
     def on_signal(signum, _frame):
+        if "code" in done:  # the command already finished; keep its exit code
+            sys.exit(done["code"])
         stop_group()
         # child.wait() cannot be used here: the interrupted wait() below holds its lock.
         for _ in range(30):
@@ -369,12 +373,13 @@ def run(argv):
     for s in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
         signal.signal(s, on_signal)
     code = child.wait()
+    done["code"] = 128 - code if code < 0 else code
     stop_group()  # leftover workers of a finished run
     time.sleep(0.3)
     stop_group(signal.SIGKILL)
     for fd in keep:
         os.close(fd)
-    sys.exit(128 - code if code < 0 else code)
+    sys.exit(done["code"])
 
 
 def main():

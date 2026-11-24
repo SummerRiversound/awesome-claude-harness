@@ -8,6 +8,7 @@ segment that is itself a heavy-run call is allowed. A guard error never blocks: 
 """
 import json, os, re, shlex, sys, time, traceback
 
+STARTED = time.time()
 HERE = os.path.dirname(os.path.realpath(__file__))
 UV = (r"uv run(?: (?:--with|--with-requirements|--python|-p|--project|--directory|--package|--extra|--group|"
       r"--env-file)[ =]\S+| --?[\w-]+)*")
@@ -33,20 +34,20 @@ HEAVY = [re.compile(r"\A" + p) for p in (
     rf"(?:{WRAP} )*nx (?:(?:test|build|lint|e2e)\b|(?:run-many|affected)\b.*\b(?:test|build|lint|e2e)\b)",
     rf"(?:{WRAP} )*playwright test\b",
     rf"(?:{WRAP} )*(?:vite|next|nuxt|nuxi|astro|svelte-kit|remix) build\b",
-    rf"(?:{WRAP} )*webpack\b(?! (?:serve|watch)\b)",
+    rf"(?:{WRAP} )*webpack(?![-\w])(?! (?:serve|watch)\b)",
     rf"(?:{WRAP} )*(?:mocha\b|cypress run\b)",
     r"(?:gradlew|gradle|mvnw|mvn) (?:\S+ )*?(?:\S*:)?(?:build|test|check|assemble|install|package|verify|"
     r"compile\S*|integrationTest)\b",
     r"docker (?:buildx )?build\b|docker compose (?:--?\S+ \S+ )*(?:build\b|up\b.* --build\b)",
     rf"(?:{WRAP} )*pre-commit run\b",
-    r"make (?:\S+ )*?(?:test|check|build|lint|all)\b",
+    r"make (?:\S+ )*?(?:test|check|build|lint|all)(?=\s|$)",
     r"make(?: (?:-[Cfj] ?\S+|-\S+|\w+=\S*))*$",  # the default target is usually the build
 )]
 # Asking a tool for its version, help, config or a dry run is not a run.
 LIGHT = {"--version", "--help", "-h", "--dry-run", "--init", "--showConfig", "--collect-only", "--co", "--listTests",
          "--list", "--fixtures", "--markers", "--watch", "--watchAll"}
 LIGHT_BY_TOOL = {"mvn": {"-v", "-V"}, "mvnw": {"-v", "-V"}, "gradle": {"-v"}, "gradlew": {"-v"}, "tsc": {"-v"},
-                 "make": {"-n", "--just-print"}}
+                 "make": {"-n", "--just-print", "-v"}, "webpack": {"-w"}}
 PREFIX = {"timeout", "gtimeout", "time", "env", "nice", "command", "exec", "nohup", "caffeinate", "sudo", "stdbuf",
           "do", "then", "else", "elif", "if", "while", "until", "{", "!"}
 TAKES_VALUE = {"env": {"-u", "-C", "-S"}, "sudo": {"-u", "-g", "-C"}, "nice": {"-n"},
@@ -122,6 +123,8 @@ def strip_prefix(w):
         if ASSIGN.match(w[0]):
             bypass |= w[0] == "HEAVY_BYPASS=1"
             w = w[1:]
+        elif os.path.basename(w[0]) == "command" and w[1:2] in (["-v"], ["-V"]):
+            return [], bypass  # a lookup, not a run
         elif os.path.basename(w[0]) in PREFIX:
             name, w = os.path.basename(w[0]), w[1:]
             while w and (w[0].startswith("-") or (name in ("timeout", "gtimeout") and re.fullmatch(r"[\d.]+[smhd]?", w[0]))):
@@ -182,7 +185,7 @@ def git_heavy(w, cwd):
 
 def wrapped(seg):
     """The command text a heavy-run segment runs, as the shell will see it (no requoting)."""
-    rest = re.split(r"\bheavy-run\b", seg, maxsplit=1)[1].strip()
+    rest = re.split(r"heavy-run(?=\s|$)", seg, maxsplit=1)[1].strip()  # not the plugins/heavy-run/ directory
     rest = re.sub(r"\A--(?:\s+|\Z)", "", rest)
     if not rest or rest.startswith("--"):
         return None
@@ -192,9 +195,10 @@ def wrapped(seg):
 
 def is_light(w):
     names = [os.path.basename(a) for a in w]
-    return (any(a in LIGHT or a in LIGHT_BY_TOOL.get(names[0], ()) or a == "watch" or a.endswith(":watch")
-                for a in w[1:])
-            or any(n in ("vitest", "jest") and w[i + 1:i + 2] in (["list"], ["dev"]) for i, n in enumerate(names)))
+    return (any(a in LIGHT or a.endswith(":watch") for a in w[1:])
+            or any(n in LIGHT_BY_TOOL and LIGHT_BY_TOOL[n] & set(w[i + 1:]) for i, n in enumerate(names))
+            or any(n in ("vitest", "cargo") and w[i + 1:i + 2] in (["list"], ["dev"], ["watch"])
+                   for i, n in enumerate(names)))
 
 
 def check(cmd, cwd, depth=0):
@@ -215,6 +219,10 @@ def check(cmd, cwd, depth=0):
             continue
         flag = next((i for i, a in enumerate(w[1:-1], 1) if re.fullmatch(r"-[a-z]*c[a-z]*", a)), None)
         if depth < 3 and ((head in SHELLS and flag) or head == "eval"):
+            if head in SHELLS and w[flag + 1] == "--":
+                flag += 1
+            if head in SHELLS and flag + 1 >= len(w):
+                continue
             body = w[flag + 1] if head in SHELLS else " ".join(w[1:])
             found, more = check(body, cwd, depth + 1)
             inner += more
@@ -261,7 +269,7 @@ def run_inner_hook(hook, data, inner):
     Only its deny or ask is passed on: an allow for one wrapped command must not approve the whole call."""
     import subprocess
     argv = [hook] if os.access(hook, os.X_OK) else ["bash", hook]
-    deadline, ask = time.time() + 7, None  # stay inside the 10 s hook timeout in hooks.json
+    deadline, ask = STARTED + 8, None  # stay inside the 10 s hook timeout in hooks.json
     for cmd, cwd in inner:
         left = deadline - time.time()
         if left <= 0:
@@ -276,8 +284,9 @@ def run_inner_hook(hook, data, inner):
         try:
             out = json.loads(r.stdout or "null") or {}
             spec = out.get("hookSpecificOutput") or {}
-            kind = spec.get("permissionDecision") or {"block": "deny"}.get(out.get("decision"))
-            why = spec.get("permissionDecisionReason") or out.get("reason") or "blocked"
+            kind = (spec.get("permissionDecision") or {"block": "deny"}.get(out.get("decision"))
+                    or ("deny" if out.get("continue") is False else None))
+            why = spec.get("permissionDecisionReason") or out.get("reason") or out.get("stopReason") or "blocked"
         except (ValueError, AttributeError):
             continue
         if kind == "deny":

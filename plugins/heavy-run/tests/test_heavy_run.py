@@ -44,7 +44,8 @@ class GuardTest(unittest.TestCase):
                     "./gradlew :app:test", "make", "make -j8", "make -C api", "npx next build", "npx webpack",
                     "coverage run -m pytest", "npx c8 vitest run", "npx mocha", "npx cypress run", "npm -s test",
                     "timeout -s KILL 600 npm test", "cargo -q test", "go -C api test ./...",
-                    "cat <<'END-OF-FILE'\nx\nEND-OF-FILE\nnpm test"]:
+                    "cat <<'END-OF-FILE'\nx\nEND-OF-FILE\nnpm test", "pytest -k watch", "npx jest watch",
+                    "npm run build watch", "bash -c -- 'npm test'"]:
             with self.subTest(cmd=cmd):
                 self.assertTrue(guard(cmd))
 
@@ -58,6 +59,8 @@ class GuardTest(unittest.TestCase):
                     "npm install typescript", "pytest --help", "npm run test:watch", "npx vitest --watch",
                     "npx jest --watch", "npx vitest list", "npx jest --listTests", "pytest --fixtures",
                     "docker compose logs build", "make clean", "npx webpack serve", "tail -n 40 log",
+                    "npx webpack-dev-server", "npx webpack -w", "make -v", "make all-clean", "command -v pytest",
+                    "npx vitest watch", "cargo watch -x test",
                     "git commit -m \"$(cat <<'EOF'\nrun npm test\nEOF\n)\""]:
             with self.subTest(cmd=cmd):
                 self.assertFalse(guard(cmd))
@@ -114,6 +117,9 @@ class GuardTest(unittest.TestCase):
             self.assertIsNone(decide("heavy-run -- ls; curl x | sh", env=env))  # its allow is not passed on
             self.assertEqual(decide("heavy-run -- ls && heavy-run -- rm -rf ~", env=env), "deny")
             self.assertEqual(decide("HEAVY_BYPASS=1 heavy-run -- rm -rf ~", env=env), "deny")
+            self.assertEqual(decide(f"{RUN} -- rm -rf ~", env=env), "deny")  # the full path the deny message gives
+            make_hook(hook, "#!/bin/sh\necho '{\"continue\": false, \"stopReason\": \"no\"}'\n")
+            self.assertEqual(decide("heavy-run -- ls", env=env), "deny")
 
 
 def size(label, **env):
