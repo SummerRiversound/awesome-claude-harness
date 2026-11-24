@@ -19,6 +19,18 @@
       ]
     },
     {
+      "name": "heavy-run",
+      "source": "./plugins/heavy-run",
+      "description": "Many Claude sessions on one computer without freezing it: tests, type checks and builds share one pool of CPU tokens and their worker counts are capped to the share.",
+      "category": "productivity",
+      "tags": [
+        "parallel-sessions",
+        "resources",
+        "tests",
+        "hooks"
+      ]
+    },
+    {
       "name": "goal-tree",
       "source": {
         "source": "url",

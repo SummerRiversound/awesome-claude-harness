@@ -1,0 +1,14 @@
+{
+  "name": "heavy-run",
+  "displayName": "Heavy Run",
+  "version": "1.0.0",
+  "description": "Many Claude sessions on one computer without freezing it: tests, type checks, builds and hook-running commits share one pool of CPU tokens, worker counts are capped to the share, and leftover test workers are stopped.",
+  "author": {
+    "name": "SummerRiversound",
+    "url": "https://github.com/SummerRiversound"
+  },
+  "homepage": "https://github.com/SummerRiversound/awesome-claude-harness/tree/main/plugins/heavy-run#readme",
+  "repository": "https://github.com/SummerRiversound/awesome-claude-harness",
+  "license": "MIT",
+  "keywords": ["parallel-sessions", "resources", "tests", "hooks"]
+}

@@ -1,0 +1,407 @@
+#!/usr/bin/env -S python3 -I
+"""Share the computer's cores between Claude sessions that run tests, type checks and builds.
+
+  heavy-run -- uv run pytest tests/    argv, run directly
+  heavy-run 'npm test && npm run lint' one shell string, run with bash -c
+  heavy-run --status                   tokens, who holds them, who waits, load, free memory
+  heavy-run --reap [--kill]            your orphaned test/build processes (parent gone, >30 min)
+  heavy-run --size <command>           print the size heavy-run would give the command
+
+Every session on this computer draws from one pool of HEAVY_TOKENS tokens (default: cores - 1).
+A whole suite, build, e2e run or hook-running commit takes HEAVY_BIG tokens (default 3); a run
+narrowed to files or a name filter (-t, -k, -g, a test file path, file::test) or a lone
+tsc/pyright/mypy takes 1. An explicit worker count (-n 4, --workers 4, -j 4) takes that many.
+Playwright always counts as big. HEAVY_SIZE=small|big overrides the guess.
+
+The run gets as many worker processes as tokens through HEAVY_WORKERS and the caps vitest,
+pytest-xdist (-n auto), cargo, Rust tests, make and gradle read; jest and playwright read no
+environment cap, so in argv form heavy-run appends --maxWorkers or --workers itself. When the run
+ends its whole process group is stopped, including anything it started in the background.
+
+Big runs queue in arrival order and the first one collects tokens one by one, keeping what it
+has. Small runs go ahead only while they leave enough free tokens for that first big run. A new
+run also waits while free memory is under HEAVY_MEM_MIN percent (default 15) and someone else
+holds tokens. A run that waits HEAVY_WAIT_MAX seconds (default 2700) gives up with exit 75.
+
+HEAVY_SERVICE_PATTERN (a regex, unset by default) marks runs that use one shared service stack
+(fixed container names or ports); those also wait for a single machine-wide service lock.
+"""
+import fcntl, glob, json, os, re, signal, subprocess, sys, time
+
+
+def env_int(name, default):
+    try:
+        return int(os.environ.get(name, default))
+    except ValueError:
+        return default
+
+
+def cpu_count():
+    if hasattr(os, "process_cpu_count"):
+        return os.process_cpu_count() or 4
+    if hasattr(os, "sched_getaffinity"):
+        return len(os.sched_getaffinity(0)) or 4
+    return os.cpu_count() or 4
+
+
+DIR = os.path.expanduser(os.environ.get("HEAVY_DIR", "~/.cache/heavy-run"))
+CORES = cpu_count()
+TOKENS = max(1, env_int("HEAVY_TOKENS", max(1, CORES - 1)))
+BIG = max(1, min(TOKENS, env_int("HEAVY_BIG", 3)))
+WAIT_MAX = env_int("HEAVY_WAIT_MAX", 2700)
+MEM_MIN = env_int("HEAVY_MEM_MIN", 15)
+SERVICES = os.environ.get("HEAVY_SERVICE_PATTERN", "")
+POLL = 2
+QUEUE = f"{DIR}/queue"
+SVC = f"{DIR}/services.lock"
+HEAVY_PROC = re.compile(r"vitest|tinypool|jest-worker|playwright|pytest|pyright|\btsc\b|rustc|cargo|semgrep|trivy")
+TOOL = re.compile(r"\b(?:vitest|jest|pytest|playwright|mocha|pyright|tsc|mypy|cargo|gradlew?|mvnw?|make|docker|"
+                  r"npm|pnpm|yarn|bun|git|pre-commit|vite|eslint|go|turbo|nx|tox|nox|unittest|dotnet|deno)\b")
+RUNNER = re.compile(r"\b(?:vitest|jest|pytest|mocha|go test|(?:npm|pnpm|yarn|bun)(?: run)? (?:test|t)(?::\S+)?)\b")
+# Option values that name a file but do not narrow the run (config files, excluded paths).
+NOT_FILTER = re.compile(r"\s(?:-c|--config|--ignore|--ignore-glob|--deselect|--exclude|-p|--rootdir|--confcutdir|"
+                        r"--cov-config|--reporter|--outputFile|--output-file|--setupFiles)(?:[\s=])\S+")
+FILTER = re.compile(r"\s(?:-k|-t|-g|-run|--grep|--testNamePattern|--test-name-pattern)(?:[\s=]|$)|::|"
+                    r"\s[^\s-]\S*\.(?:py|[cm]?[jt]sx?)\b")
+SINGLE = re.compile(r"\b(?:tsc|pyright|mypy)\b")
+WORKERS = re.compile(r"\s(?:-n|--numprocesses|--workers|-j|--jobs|--maxWorkers|--max-workers)[\s=](\d+)\b")
+# Worker flags count only after a tool that takes them: `tail -n 40` or `nice -n 5` is not a worker count.
+TAKES_WORKERS = re.compile(r"\b(?:pytest|playwright|jest|vitest|mocha|make|cargo|tox|nox|gradlew?|mvnw?|turbo|nx)\b")
+
+
+def tok(i):
+    return f"{DIR}/tok{i}.lock"
+
+
+def need_of(label):
+    """Tokens the command needs, from its text."""
+    s = os.environ.get("HEAVY_SIZE", "").lower()
+    if s in ("small", "big"):
+        return 1 if s == "small" else BIG
+    segs = [NOT_FILTER.sub(" ", re.sub(r"\d?>>?&?\s*\S+", "", x)) for x in re.split(r"&&|\|\||;|\|", label)]
+    explicit = [int(n) for x in segs for m in [TAKES_WORKERS.search(x)] if m for n in WORKERS.findall(x[m.end():])]
+    if explicit:
+        return max(1, min(TOKENS, max(explicit)))
+    segs = [x for x in segs if TOOL.search(x)]
+
+    def small(seg):
+        if re.search(r"\bplaywright\b|[:\s]e2e\b", seg):
+            return False  # spreads over its own workers whatever the filter
+        if RUNNER.search(seg):
+            return bool(FILTER.search(seg))
+        return bool(SINGLE.search(seg)) and not re.search(r"\b(?:npm|pnpm|yarn|bun)\b", seg)
+
+    return 1 if segs and all(small(x) for x in segs) else BIG
+
+
+def holder(path):
+    try:
+        with open(path) as f:
+            return json.loads(f.read() or "null")
+    except (OSError, ValueError):
+        return None
+
+
+def try_lock(path):
+    fd = os.open(path, os.O_RDWR | os.O_CREAT, 0o644)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        return fd
+    except BlockingIOError:
+        os.close(fd)
+        return None
+
+
+def is_free(path):
+    fd = try_lock(path)
+    if fd is None:
+        return False
+    os.close(fd)
+    return True
+
+
+def mark(fd, label, need):
+    os.ftruncate(fd, 0)
+    os.pwrite(fd, json.dumps({"pid": os.getpid(), "cwd": os.getcwd(), "cmd": label[:160], "tokens": need,
+                              "since": time.strftime("%H:%M:%S")}).encode(), 0)
+
+
+def mem_free():
+    """Free memory in percent, or None when it cannot be read."""
+    try:
+        if sys.platform == "darwin":
+            out = subprocess.run(["memory_pressure", "-Q"], capture_output=True, text=True, timeout=5).stdout
+            m = re.search(r"(\d+)%", out)
+            return int(m.group(1)) if m else None
+        info = dict(l.split(":", 1) for l in open("/proc/meminfo"))
+        return int(100 * int(info["MemAvailable"].split()[0]) / int(info["MemTotal"].split()[0]))
+    except Exception:
+        return None
+
+
+def all_tokens():
+    """Every token file, also those of sessions configured with a larger pool."""
+    return glob.glob(f"{DIR}/tok*.lock")
+
+
+def held_by(pid):
+    return sum(1 for p in all_tokens() if not is_free(p) and (holder(p) or {}).get("pid") == pid)
+
+
+def holders():
+    by_pid = {}
+    for p in sorted(all_tokens(), key=lambda p: int(re.sub(r"\D", "", os.path.basename(p)) or 0)):
+        if not is_free(p):
+            h = holder(p) or {}
+            e = by_pid.setdefault(h.get("pid", p), dict(h, held=0))
+            e["held"] += 1
+    return list(by_pid.values())
+
+
+def holder_lines():
+    out = []
+    for h in holders():
+        want = h.get("tokens", h["held"])
+        state = "" if h["held"] >= want else f", collecting {h['held']} of {want}"
+        out.append(f"  [{want}] {h.get('cmd', '?')}  ({os.path.basename(h.get('cwd', '?'))}, since {h.get('since', '?')}{state})")
+    return out
+
+
+def queue():
+    """Live queue entries of big runs, oldest first. Entries nobody holds are removed."""
+    live = []
+    for p in sorted(glob.glob(f"{QUEUE}/q-*.lock")):
+        fd = try_lock(p)
+        if fd is None:
+            live.append(p)
+        else:
+            try:
+                os.unlink(p)
+            except OSError:
+                pass
+            os.close(fd)
+    return live
+
+
+def join_queue(label, need):
+    os.makedirs(QUEUE, exist_ok=True)
+    tmp = f"{QUEUE}/tmp-{os.getpid()}"
+    fd = try_lock(tmp)
+    mark(fd, label, need)
+    path = f"{QUEUE}/q-{time.time_ns():020d}-{os.getpid()}.lock"
+    os.rename(tmp, path)  # appears in the queue already locked, so nobody takes it for stale
+    return fd, path
+
+
+START = time.time()  # one wait limit for the service lock and the tokens together
+
+
+def acquire_lock(path, label, what):
+    start, last = START, 0.0
+    while True:
+        fd = try_lock(path)
+        if fd is not None:
+            mark(fd, label, 0)
+            if last:
+                print(f"[heavy-run] got {what} after {int(time.time() - start)}s", file=sys.stderr, flush=True)
+            return fd
+        if time.time() - start > WAIT_MAX:
+            print(f"[heavy-run] gave up after {WAIT_MAX}s waiting for {what}", file=sys.stderr)
+            sys.exit(75)
+        if time.time() - last >= 60:
+            print(f"[heavy-run] waiting for {what}: {(holder(path) or {}).get('cmd', '?')}", file=sys.stderr, flush=True)
+            last = time.time()
+        time.sleep(POLL)
+
+
+def acquire_tokens(need, label):
+    mine, qfd, qpath = {}, None, None
+    if need > 1:
+        qfd, qpath = join_queue(label, need)
+    start, last = START, 0.0
+    try:
+        while True:
+            q = queue()
+            if need > 1:
+                allowed = bool(q) and q[0] == qpath
+                reason = "earlier big runs"
+            else:
+                allowed, reason = True, "free tokens"
+                if q:  # leave the first big run the tokens it still needs
+                    h = holder(q[0]) or {}
+                    missing = h.get("tokens", BIG) - held_by(h.get("pid"))
+                    free = sum(1 for i in range(TOKENS) if is_free(tok(i)))
+                    allowed = free - missing >= 1
+                    reason = "tokens a waiting big run needs"
+            if allowed and not mine:
+                m = mem_free()
+                others = any(not is_free(p) for p in all_tokens())
+                if m is not None and m < MEM_MIN and others:
+                    allowed, reason = False, f"free memory ({m}% < {MEM_MIN}%)"
+            if allowed:
+                reason = "free tokens"
+                for i in (range(TOKENS) if need > 1 else reversed(range(TOKENS))):
+                    if len(mine) >= need:
+                        break
+                    if i not in mine:
+                        fd = try_lock(tok(i))
+                        if fd is not None:
+                            mine[i] = fd
+                            mark(fd, label, need)
+                if len(mine) >= need:
+                    if last:
+                        print(f"[heavy-run] got {need} token(s) after {int(time.time() - start)}s", file=sys.stderr, flush=True)
+                    return mine
+            if time.time() - start > WAIT_MAX:
+                print(f"[heavy-run] gave up after {WAIT_MAX}s waiting for {reason}", file=sys.stderr)
+                sys.exit(75)
+            if time.time() - last >= 60:
+                print(f"[heavy-run] needs {need} token(s), waiting for {reason}:", file=sys.stderr)
+                print("\n".join(holder_lines()) or "  (no holders)", file=sys.stderr, flush=True)
+                last = time.time()
+            time.sleep(POLL)
+    finally:
+        if qfd is not None:
+            try:
+                os.unlink(qpath)
+            except OSError:
+                pass
+            os.close(qfd)
+
+
+def status():
+    hs = holders()
+    used = sum(h["held"] for h in hs)
+    m = mem_free()
+    print(f"cores {CORES}, tokens {TOKENS} (narrow run 1, whole suite or build {BIG}), "
+          f"wait limit {WAIT_MAX}s, memory floor {MEM_MIN}%")
+    print(f"load {' '.join(f'{x:.1f}' for x in os.getloadavg())}, memory free {'?' if m is None else f'{m}%'}, "
+          f"tokens in use {used} of {TOKENS}")
+    print("\n".join(holder_lines()) or "  (no runs)")
+    for p in queue():
+        h = holder(p) or {}
+        print(f"  waiting [{h.get('tokens', '?')}] {h.get('cmd', '?')}  (since {h.get('since', '?')})")
+    if SERVICES:
+        print(f"  services: {'free' if is_free(SVC) else (holder(SVC) or {}).get('cmd', '?')}")
+
+
+def etime_s(s):
+    d, _, rest = s.rpartition("-")
+    parts = [int(x) for x in rest.split(":")]
+    while len(parts) < 3:
+        parts.insert(0, 0)
+    return (int(d) if d else 0) * 86400 + parts[0] * 3600 + parts[1] * 60 + parts[2]
+
+
+def reap(kill):
+    ps = subprocess.run(["ps", "-axo", "pid=,ppid=,uid=,etime=,command="], capture_output=True, text=True).stdout
+    found = 0
+    for line in ps.splitlines():
+        pid, ppid, uid, et, cmd = line.split(None, 4)
+        words = cmd.split()
+        prog = " ".join(words[:2])  # the program and its script (node .../vitest.mjs), not every argument
+        if (ppid == "1" and uid == str(os.getuid()) and HEAVY_PROC.search(prog) and etime_s(et) > 1800
+                and "heavy-run" not in cmd and not {"watch", "--watch", "--watchAll"} & set(words)):
+            found += 1
+            print(f"{pid}  {et}  {cmd[:140]}")
+            if kill:
+                try:
+                    os.kill(int(pid), signal.SIGTERM)
+                except OSError:
+                    pass
+    print(f"{found} orphaned" + (" (sent SIGTERM)" if kill and found else ""))
+
+
+def worker_args(argv, n):
+    """jest and playwright read no env cap: append their worker flag unless one is given."""
+    names = [os.path.basename(a) for a in argv]
+    if any(re.match(r"--?(?:w|workers|maxWorkers|max-workers|j)(?:=|$)", a) for a in argv):
+        return argv
+    if "jest" in names:
+        return argv + [f"--maxWorkers={n}"]
+    if "playwright" in names and "test" in argv[names.index("playwright"):]:
+        return argv + [f"--workers={n}"]
+    return argv
+
+
+def run(argv):
+    shell = len(argv) == 1
+    label = argv[0] if shell else " ".join(argv)
+    if re.match(r"\s*gh(\s|$)", label):
+        sys.exit("[heavy-run] wrap only the heavy command itself, not gh")
+    svc = acquire_lock(SVC, label, "the shared service stack") if SERVICES and re.search(SERVICES, label) else None
+    mine = acquire_tokens(need_of(label), label)
+    n = str(len(mine))
+    flags = os.environ.get("MAKEFLAGS", "")
+    env = dict(os.environ, HEAVY_WORKERS=n, VITEST_MAX_WORKERS=n, VITEST_MAX_THREADS=n, VITEST_MAX_FORKS=n,
+               VITEST_MIN_THREADS="1", VITEST_MIN_FORKS="1", PYTEST_XDIST_AUTO_NUM_WORKERS=n,
+               CARGO_BUILD_JOBS=n, RUST_TEST_THREADS=n,
+               MAKEFLAGS=flags if re.search(r"(?:^|\s)(?:-j|--jobs)", flags) else f"{flags} -j{n}".strip(),
+               GRADLE_OPTS=(os.environ.get("GRADLE_OPTS", "") + f" -Dorg.gradle.workers.max={n}").strip())
+    keep = list(mine.values()) + ([svc] if svc is not None else [])
+    try:
+        # The child keeps the lock fds: if this wrapper is SIGKILLed, the tokens stay taken until the run ends.
+        child = subprocess.Popen(["bash", "-c", argv[0]] if shell else worker_args(argv, n), env=env,
+                                 start_new_session=True, pass_fds=keep)
+    except FileNotFoundError:
+        print(f"[heavy-run] command not found: {argv[0]}", file=sys.stderr)
+        sys.exit(127)
+
+    def stop_group(sig=signal.SIGTERM):
+        try:
+            os.killpg(child.pid, sig)
+        except (ProcessLookupError, PermissionError):
+            pass
+
+    done = {}
+
+    def on_signal(signum, _frame):
+        if "code" in done:  # the command already finished; keep its exit code
+            sys.exit(done["code"])
+        stop_group()
+        # child.wait() cannot be used here: the interrupted wait() below holds its lock.
+        for _ in range(30):
+            try:
+                if os.waitpid(child.pid, os.WNOHANG)[0]:
+                    break
+            except ChildProcessError:
+                break
+            time.sleep(0.1)
+        stop_group(signal.SIGKILL)
+        sys.exit(128 + signum)
+
+    for s in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
+        signal.signal(s, on_signal)
+    code = child.wait()
+    done["code"] = 128 - code if code < 0 else code
+    stop_group()  # leftover workers of a finished run
+    time.sleep(0.3)
+    stop_group(signal.SIGKILL)
+    for fd in keep:
+        os.close(fd)
+    sys.exit(done["code"])
+
+
+def main():
+    os.makedirs(DIR, exist_ok=True)
+    a = sys.argv[1:]
+    if not a or a[0] in ("-h", "--help"):
+        print(__doc__)
+    elif a[0] == "--status":
+        status()
+    elif a[0] == "--reap":
+        reap("--kill" in a)
+    elif a[0] == "--size":
+        print("small" if need_of(" ".join(a[1:])) == 1 else "big")
+    else:
+        argv = a[1:] if a[0] == "--" else a
+        if not argv:
+            sys.exit("[heavy-run] no command given; see heavy-run --help")
+        run(argv)
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except KeyboardInterrupt:  # Ctrl-C while waiting for tokens
+        sys.exit(130)
