@@ -64,8 +64,12 @@ To skip the check for one command, put `HEAVY_BYPASS=1` in front of it.
 - Worker caps work for tools that read them. A tool that ignores them can use more than its share.
 - Dev servers and watch mode (`--watch`, `test:watch`) never finish, so they are let through, not
   wrapped and not counted.
-- The hook reads the command line only. `npm run lint` is caught because the script name says so,
-  but a bare `eslint .` is not, and a custom script name such as `npm run ci` is not either.
+- The hook reads the command line, plus any shell script it runs (`bash <file>`, `sh -e <file>`,
+  `./<file>` with a shell shebang): up to three levels deep, the first 256 KB of each. A sourced file
+  (`source`, `.`) is not read, since those are mostly rc and env files.
+  `npm run lint` is caught because the script name says so, but a bare `eslint .` is not, a custom
+  script name such as `npm run ci` is not either, and neither is a Python or Node script that starts
+  tests itself.
 - Commands passed through `xargs`, `watch` or `find -exec` are not caught.
 
 ## Tests
