@@ -51,6 +51,7 @@ You rarely type anything: Claude reruns the command through the wrapper when the
 heavy-run -- npx vitest run            one command, argv form
 heavy-run 'npm test && npm run lint'   one shell string
 heavy-run --status                     who holds the tokens, load, free memory
+heavy-run --status --json              the same as one JSON object for programs (a parallel runner reads tokens_free to decide how many units to start)
 heavy-run --reap [--kill]              orphaned test workers older than 30 minutes
 ```
 

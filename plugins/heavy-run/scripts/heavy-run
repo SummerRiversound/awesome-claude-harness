@@ -4,6 +4,7 @@
   heavy-run -- uv run pytest tests/    argv, run directly
   heavy-run 'npm test && npm run lint' one shell string, run with bash -c
   heavy-run --status                   tokens, who holds them, who waits, load, free memory
+  heavy-run --status --json            the same as one JSON object
   heavy-run --reap [--kill]            your orphaned test/build processes (parent gone, >30 min)
   heavy-run --size <command>           print the size heavy-run would give the command
 
@@ -158,9 +159,9 @@ def holders():
     return list(by_pid.values())
 
 
-def holder_lines():
+def holder_lines(hs=None):
     out = []
-    for h in holders():
+    for h in holders() if hs is None else hs:
         want = h.get("tokens", h["held"])
         state = "" if h["held"] >= want else f", collecting {h['held']} of {want}"
         out.append(f"  [{want}] {h.get('cmd', '?')}  ({os.path.basename(h.get('cwd', '?'))}, since {h.get('since', '?')}{state})")
@@ -269,20 +270,31 @@ def acquire_tokens(need, label):
             os.close(qfd)
 
 
-def status():
+def status(as_json=False):
     hs = holders()
     used = sum(h["held"] for h in hs)
     m = mem_free()
+    load = os.getloadavg()
+    waiting = [holder(p) or {} for p in queue()]
+    services = ("free" if is_free(SVC) else (holder(SVC) or {}).get("cmd", "?")) if SERVICES else None
+    if as_json:
+        print(json.dumps({
+            "cores": CORES, "tokens": TOKENS, "tokens_in_use": used, "tokens_free": TOKENS - used,
+            "big": BIG, "small": 1, "wait_max": WAIT_MAX, "mem_min": MEM_MIN, "load": list(load), "mem_free": m,
+            "holders": [{"tokens": h.get("tokens", h["held"]), "held": h["held"], "cmd": h.get("cmd"),
+                         "cwd": h.get("cwd"), "since": h.get("since")} for h in hs],
+            "waiting": [{"tokens": h.get("tokens"), "cmd": h.get("cmd"), "since": h.get("since")} for h in waiting],
+            "services": services}))
+        return
     print(f"cores {CORES}, tokens {TOKENS} (narrow run 1, whole suite or build {BIG}), "
           f"wait limit {WAIT_MAX}s, memory floor {MEM_MIN}%")
-    print(f"load {' '.join(f'{x:.1f}' for x in os.getloadavg())}, memory free {'?' if m is None else f'{m}%'}, "
+    print(f"load {' '.join(f'{x:.1f}' for x in load)}, memory free {'?' if m is None else f'{m}%'}, "
           f"tokens in use {used} of {TOKENS}")
-    print("\n".join(holder_lines()) or "  (no runs)")
-    for p in queue():
-        h = holder(p) or {}
+    print("\n".join(holder_lines(hs)) or "  (no runs)")
+    for h in waiting:
         print(f"  waiting [{h.get('tokens', '?')}] {h.get('cmd', '?')}  (since {h.get('since', '?')})")
     if SERVICES:
-        print(f"  services: {'free' if is_free(SVC) else (holder(SVC) or {}).get('cmd', '?')}")
+        print(f"  services: {services}")
 
 
 def etime_s(s):
@@ -388,7 +400,7 @@ def main():
     if not a or a[0] in ("-h", "--help"):
         print(__doc__)
     elif a[0] == "--status":
-        status()
+        status("--json" in a[1:])
     elif a[0] == "--reap":
         reap("--kill" in a)
     elif a[0] == "--size":
