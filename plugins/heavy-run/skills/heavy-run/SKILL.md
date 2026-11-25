@@ -30,6 +30,7 @@ stopped too, including a server you started inside it with `&`.
 ## When a run waits
 
 1. Run `heavy-run --status` to see who holds the tokens and since when.
+   Use `heavy-run --status --json` when a program reads the result, e.g. a parallel runner checking `tokens_free`.
 2. If you only need part of the suite, narrow it (a file path, `-t name`, `-k name`, `file::test`):
    it then takes 1 token and usually starts at once.
 3. Otherwise wait. Do not split the suite into pieces to dodge the queue, and do not set
