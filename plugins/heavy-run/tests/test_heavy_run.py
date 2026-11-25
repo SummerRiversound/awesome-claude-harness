@@ -265,5 +265,45 @@ class TokenTest(unittest.TestCase):
             self.assertEqual(r.stdout.strip(), "src --maxWorkers=2")
 
 
+class StatusJsonTest(unittest.TestCase):
+    def setUp(self):
+        self.dir = tempfile.mkdtemp()
+        self.env = dict(BASE, HEAVY_DIR=self.dir, HEAVY_TOKENS="3", HEAVY_BIG="2", HEAVY_WAIT_MAX="30",
+                        HEAVY_MEM_MIN="0")
+
+    def status(self, *flags):
+        return subprocess.run([RUN, "--status", *flags], capture_output=True, text=True, env=self.env).stdout
+
+    def test_all_tokens_are_free_when_nothing_runs(self):
+        d = json.loads(self.status("--json"))
+        self.assertEqual(d["tokens"], 3)
+        self.assertEqual(d["tokens_free"], d["tokens"])
+        self.assertEqual(d["tokens_in_use"], 0)
+        self.assertEqual(d["holders"], [])
+        self.assertEqual(d["waiting"], [])
+        self.assertIsNone(d["services"])
+        self.assertEqual(len(d["load"]), 3)
+
+    def test_a_held_run_is_listed_and_takes_its_tokens(self):
+        p = subprocess.Popen([RUN, "sleep 3"], env=dict(self.env, HEAVY_SIZE="big"))
+        try:
+            for _ in range(50):
+                d = json.loads(self.status("--json"))
+                if d["holders"]:
+                    break
+                time.sleep(0.1)
+            self.assertEqual([(h["cmd"], h["tokens"], h["held"]) for h in d["holders"]], [("sleep 3", 2, 2)])
+            self.assertEqual(d["tokens_free"], 1)
+            self.assertEqual(d["tokens_in_use"], 2)
+        finally:
+            p.wait()
+
+    def test_plain_status_stays_text(self):
+        out = self.status()
+        self.assertRegex(out.splitlines()[0], r"^cores \d+, tokens 3 ")
+        with self.assertRaises(ValueError):
+            json.loads(out)
+
+
 if __name__ == "__main__":
     unittest.main()
