@@ -65,6 +65,33 @@ class GuardTest(unittest.TestCase):
             with self.subTest(cmd=cmd):
                 self.assertFalse(guard(cmd))
 
+    def test_a_script_file_is_judged_by_what_it_runs(self):
+        with tempfile.TemporaryDirectory() as d:
+            make_hook(os.path.join(d, "full.sh"), "#!/bin/bash\nset -e\ncd \"$1\"\nuv run pytest tests/unit tests/integration\n")
+            make_hook(os.path.join(d, "outer.sh"), "#!/bin/sh\nbash ./full.sh .\n")
+            make_hook(os.path.join(d, "light.sh"), "#!/bin/bash\n# npm test is only mentioned here\ngit status\n")
+            make_hook(os.path.join(d, "self.sh"), "#!/bin/bash\nheavy-run -- npm test\n")
+            make_hook(os.path.join(d, "tool.py"), "#!/usr/bin/env python3\npytest = 1\n")
+            with open(os.path.join(d, "plain.sh"), "w") as f:
+                f.write("npm run lint\n")
+            for cmd in ["bash full.sh /wt", f"bash {d}/full.sh /wt", "sh -e full.sh", "zsh full.sh",
+                        "bash -o pipefail full.sh", "./full.sh /wt", "timeout 600 bash full.sh",
+                        "nohup bash full.sh > log", "bash outer.sh", "sh plain.sh", "bash -c 'bash full.sh'"]:
+                with self.subTest(cmd=cmd):
+                    self.assertTrue(guard(cmd, d))
+            for cmd in ["heavy-run bash full.sh /wt", "heavy-run -- ./full.sh", "bash light.sh", "./light.sh",
+                        "bash self.sh", "bash missing.sh", "bash", "bash -s < full.sh", "cat full.sh",
+                        "HEAVY_BYPASS=1 bash full.sh", "./tool.py", "source plain.sh"]:
+                with self.subTest(cmd=cmd):
+                    self.assertFalse(guard(cmd, d))
+
+    def test_a_command_that_is_not_text_passes_without_an_error(self):
+        with tempfile.TemporaryDirectory() as home:
+            out = subprocess.run([sys.executable, "-I", GUARD], input=json.dumps({"tool_input": {"command": 5}}),
+                                 capture_output=True, text=True, env=dict(BASE, HOME=home))
+            self.assertEqual(out.stdout.strip(), "")
+            self.assertFalse(os.path.exists(os.path.join(home, ".cache", "heavy-run", "guard-errors.log")))
+
     def test_commit_and_push_are_heavy_only_when_a_hook_runs(self):
         with tempfile.TemporaryDirectory() as d:
             subprocess.run(["git", "init", "-q", d], check=True)

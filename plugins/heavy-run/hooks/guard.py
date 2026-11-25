@@ -201,6 +201,31 @@ def is_light(w):
                    for i, n in enumerate(names)))
 
 
+def script_file(w, cwd):
+    """The file a shell will read and run for these words (bash f, sh -e f, ./f with a shell shebang), or None.
+    `source f` is left out: it mostly loads rc and env files whose function bodies never run."""
+    head, path = os.path.basename(w[0]), None
+    if head in SHELLS:
+        i = 1
+        while i < len(w) and w[i][:1] in "-+":
+            if w[i] == "-s":
+                return None  # reads the script from stdin
+            i += 2 if w[i] in ("-o", "+o") else 1
+        path = w[i] if i < len(w) else None
+    elif "/" in w[0]:
+        path = w[0]
+    if not path:
+        return None
+    path = os.path.join(cwd, os.path.expanduser(path))
+    if not os.path.isfile(path):
+        return None
+    if head not in SHELLS:
+        with open(path, errors="replace") as f:
+            if not re.match(r"#!.*\b(?:ba|z|da)?sh\b", f.readline(256)):
+                return None
+    return path
+
+
 def check(cmd, cwd, depth=0):
     """Returns (heavy segment or None, list of (command wrapped in heavy-run, its cwd))."""
     inner = []
@@ -231,6 +256,13 @@ def check(cmd, cwd, depth=0):
             continue
         if bypass:
             continue
+        script = script_file(w, cwd) if depth < 3 else None
+        if script:
+            with open(script, errors="replace") as f:
+                found, more = check(f.read(256 * 1024), cwd, depth + 1)  # the script runs in the caller's cwd
+            inner += more
+            if found:
+                return seg, inner
         if head == "git":
             if git_heavy(w, cwd):
                 return seg, inner
@@ -249,6 +281,7 @@ def deny(seg):
         f"Heavy command ({seg[:80]}). Every Claude session on this computer shares one pool of CPU tokens, "
         "so runs do not starve each other. Rerun it through the wrapper, keeping `cd` outside: "
         f"`cd <dir> && {run} -- <command and args>`, or one quoted shell string: `{run} '<cmd> && <cmd>'`. "
+        f"A script file that runs them goes through it whole: `{run} bash <file> <args>`. "
         "A whole suite, build or hook-running commit takes 3 tokens and 3 workers; a run narrowed to files or a "
         "name filter (-t, -k, a test file path, file::test) takes 1, so narrow it when that is all you need. "
         "It may wait for tokens before it starts, so give the Bash call timeout 7200000; for a whole suite or "
@@ -300,7 +333,7 @@ def run_inner_hook(hook, data, inner):
 def main():
     data = json.load(sys.stdin)
     cmd = data.get("tool_input", {}).get("command", "")
-    if not cmd:
+    if not cmd or not isinstance(cmd, str):
         return
     seg, inner = check(cmd, data.get("cwd") or os.getcwd())
     if seg:
